@@ -8,7 +8,15 @@ use models::Input;
 use std::io::Read;
 use themes::Theme;
 
-const BUDDY_RESERVE: usize = 20; // sprite (~14) + padding; speech bubble is transient
+const DEFAULT_TERMINAL_COLS: usize = 120;
+
+fn parse_columns(value: &str) -> Option<usize> {
+    value.parse::<usize>().ok().filter(|&cols| cols > 0)
+}
+
+fn columns_from_env() -> Option<usize> {
+    std::env::var("COLUMNS").ok().and_then(|value| parse_columns(&value))
+}
 
 #[cfg(unix)]
 fn parent_id() -> u32 {
@@ -44,7 +52,11 @@ fn terminal_cols() -> usize {
     #[cfg(not(target_os = "macos"))]
     const TIOCGWINSZ: std::os::raw::c_ulong = 0x5413;
 
-    // Open /dev/tty — the controlling terminal, regardless of redirection
+    if let Some(cols) = columns_from_env() {
+        return cols;
+    }
+
+    // 狀態列的標準輸出會被 Claude Code 接管，因此必須直接查詢控制終端。
     if let Ok(tty) = std::fs::File::open("/dev/tty") {
         let fd = tty.as_raw_fd();
         unsafe {
@@ -54,12 +66,91 @@ fn terminal_cols() -> usize {
             }
         }
     }
-    120
+    DEFAULT_TERMINAL_COLS
 }
 
 #[cfg(windows)]
 fn terminal_cols() -> usize {
-    120
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct Coord {
+        x: i16,
+        y: i16,
+    }
+
+    #[repr(C)]
+    struct SmallRect {
+        left: i16,
+        top: i16,
+        right: i16,
+        bottom: i16,
+    }
+
+    #[repr(C)]
+    struct ConsoleScreenBufferInfo {
+        size: Coord,
+        cursor_position: Coord,
+        attributes: u16,
+        window: SmallRect,
+        maximum_window_size: Coord,
+    }
+
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn CreateFileW(
+            file_name: *const u16,
+            desired_access: u32,
+            share_mode: u32,
+            security_attributes: *mut c_void,
+            creation_disposition: u32,
+            flags_and_attributes: u32,
+            template_file: *mut c_void,
+        ) -> *mut c_void;
+        fn GetConsoleScreenBufferInfo(
+            console_output: *mut c_void,
+            info: *mut ConsoleScreenBufferInfo,
+        ) -> i32;
+        fn CloseHandle(object: *mut c_void) -> i32;
+    }
+
+    if let Some(cols) = columns_from_env() {
+        return cols;
+    }
+
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const OPEN_EXISTING: u32 = 3;
+    const INVALID_HANDLE_VALUE: *mut c_void = -1isize as *mut c_void;
+
+    let console_name: Vec<u16> = "CONOUT$\0".encode_utf16().collect();
+    unsafe {
+        // stdout 通常是 pipe；開啟 CONOUT$ 才能取得實際的 Windows Console 視窗寬度。
+        let handle = CreateFileW(
+            console_name.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null_mut(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        );
+        if handle != INVALID_HANDLE_VALUE {
+            let mut info = std::mem::zeroed::<ConsoleScreenBufferInfo>();
+            let ok = GetConsoleScreenBufferInfo(handle, &mut info);
+            let _ = CloseHandle(handle);
+            if ok != 0 {
+                let width = i32::from(info.window.right) - i32::from(info.window.left) + 1;
+                if width > 0 {
+                    return width as usize;
+                }
+            }
+        }
+    }
+
+    DEFAULT_TERMINAL_COLS
 }
 
 fn print_help() {
@@ -137,10 +228,8 @@ fn main() {
     }
     // Demo mode: read-only, don't modify state
 
-    // Calculate available width for statusline (reserve space for buddy companion)
-    let max_width = manual_width.unwrap_or_else(|| {
-        terminal_cols().saturating_sub(BUDDY_RESERVE)
-    });
+    // Claude Code 會以 COLUMNS 提供 status line 可使用的完整寬度。
+    let max_width = manual_width.unwrap_or_else(terminal_cols);
 
     // Render with selected theme
     let output = match theme_name {
@@ -149,4 +238,21 @@ fn main() {
     };
 
     println!("{output}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_columns_values_are_ignored() {
+        assert_eq!(parse_columns(""), None);
+        assert_eq!(parse_columns("0"), None);
+        assert_eq!(parse_columns("abc"), None);
+    }
+
+    #[test]
+    fn valid_columns_value_is_accepted() {
+        assert_eq!(parse_columns("96"), Some(96));
+    }
 }
