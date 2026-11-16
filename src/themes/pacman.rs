@@ -3,7 +3,6 @@ use crate::models::{Input, RawState};
 use crate::settings::read_effort_level;
 use crate::themes::Theme;
 
-const DEFAULT_TOTAL_W: usize = 54;
 const MIN_TOTAL_W: usize = 30;
 const PAD: usize = 1;
 const BORDER: usize = 2; // left + right border chars
@@ -43,7 +42,7 @@ pub struct Pacman;
 
 impl Theme for Pacman {
     fn render(&self, input: &Input, _state: &RawState, max_width: usize) -> String {
-        let total_w = max_width.clamp(MIN_TOTAL_W, DEFAULT_TOTAL_W);
+        let total_w = max_width.max(MIN_TOTAL_W);
         let map_w = total_w - BORDER - PAD * 2;
         let pac_min = map_w.min(12);
 
