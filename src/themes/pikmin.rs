@@ -4,7 +4,6 @@ use crate::settings::read_effort_level;
 use crate::state::{current_slot, slot_pos};
 use crate::themes::Theme;
 
-const DEFAULT_TRAIL_SLOTS: u64 = 36;
 const FUTURE_SLOTS: u64 = 4;
 
 const SMALL_FLOWERS: [&str; 3] = ["🌸", "🌺", "🌼"];
@@ -96,7 +95,7 @@ pub struct Pikmin {
 }
 
 impl Theme for Pikmin {
-    fn render(&self, input: &Input, state: &RawState, _max_width: usize) -> String {
+    fn render(&self, input: &Input, state: &RawState, max_width: usize) -> String {
         let ne = self.narrow_emoji;
         let slot = current_slot();
         let ctx_remain = input.context_window.remain();
@@ -118,23 +117,40 @@ impl Theme for Pikmin {
         let pikmin = pikmin_squad();
         let mut game = String::new();
 
-        // Trail
-        for s in (slot - DEFAULT_TRAIL_SLOTS + 1)..=slot {
-            let content = trail_content(s, state);
-            let pos = slot_pos(s);
-            game += &render_slot(content, pos, ne);
-        }
-
-        // Pikmin
+        // 先保留隊伍與未來四格，再依剩餘寬度加入最近的足跡，避免窄終端換行。
         let squad_spacer = if ne { HS } else { "" };
-        game += &format!("{pikmin}{squad_spacer}");
+        let squad = format!("{pikmin}{squad_spacer}");
 
         // Future
+        let mut future = String::new();
         for s in (slot + 1)..=(slot + FUTURE_SLOTS) {
             let content = future_content(s, five_reset_slot, week_reset_slot);
             let pos = slot_pos(s);
-            game += &render_slot(content, pos, ne);
+            future += &render_slot(content, pos, ne);
         }
+
+        let fixed_width = visible_width_ex(&squad, ne) + visible_width_ex(&future, ne);
+        let target_width = max_width.max(fixed_width);
+        let mut trail_parts = Vec::new();
+        let mut used_width = fixed_width;
+        let mut offset = 0;
+        while used_width < target_width {
+            let trail_slot = slot.saturating_sub(offset);
+            let part = render_slot(trail_content(trail_slot, state), slot_pos(trail_slot), ne);
+            let part_width = visible_width_ex(&part, ne);
+            if used_width + part_width > target_width {
+                break;
+            }
+            used_width += part_width;
+            trail_parts.push(part);
+            offset += 1;
+        }
+        trail_parts.reverse();
+        // 格子的顯示寬度可能是 1 或 2；剩餘一欄以空白補齊，確保整行等於 COLUMNS。
+        game += &" ".repeat(target_width - used_width);
+        game += &trail_parts.concat();
+        game += &squad;
+        game += &future;
 
         // Derive map_w from game line's actual visible width (terminal-aware)
         let map_w = visible_width_ex(&game, ne);
@@ -373,5 +389,24 @@ mod tests {
     fn test_render_slot_normal() {
         let result = render_slot("🌸", 3, false);
         assert_eq!(result, "🌸");
+    }
+
+    #[test]
+    fn test_narrow_width_reduces_trail() {
+        let input = Input::default();
+        let state = RawState::default();
+        let theme = Pikmin {
+            narrow_emoji: false,
+            buddy_padding: false,
+        };
+
+        let narrow = theme.render(&input, &state, 30);
+        let wide = theme.render(&input, &state, 100);
+
+        let narrow_game = narrow.lines().nth(2).unwrap();
+        let wide_game = wide.lines().nth(2).unwrap();
+        assert!(visible_width(narrow_game) < visible_width(wide_game));
+        assert_eq!(visible_width(narrow_game), 30);
+        assert_eq!(visible_width(wide_game), 100);
     }
 }

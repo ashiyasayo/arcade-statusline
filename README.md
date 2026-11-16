@@ -97,9 +97,13 @@ Add to `~/.claude/settings.json`:
 | Flag | Description |
 |---|---|
 | `--theme <NAME>` | Theme: `pacman` (default), `pikmin` |
-| `--width <N>` | Override statusline width (auto-detected from terminal) |
+| `--width <N>` | Override statusline width (auto-detected from `COLUMNS` or the active terminal) |
 | `--narrow-emoji` | Force narrow emoji mode (auto-detected for JetBrains) |
 | `--buddy-padding` | Add padding lines for Claude Code buddy alignment (JetBrains only) |
+
+Both themes automatically fill the width reported by Claude Code through `COLUMNS`. Pac-Man expands
+or contracts its map, while Pikmin keeps the squad and upcoming slots visible and adjusts the length
+of the historical trail. Use `--width` when the host does not expose its terminal size correctly.
 
 **JetBrains users:** JetBrains terminals render emoji as 1 column instead of 2 ([IJPL-106227](https://youtrack.jetbrains.com/issue/IJPL-106227)). The binary auto-detects this and compensates. If the Claude Code buddy overlaps with your statusline, add `--buddy-padding`:
 
