@@ -89,6 +89,21 @@ fn future_content(slot: u64, five_reset_slot: Option<u64>, week_reset_slot: Opti
     }
 }
 
+/// 將左右資訊對齊到固定寬度；內容放不下時交由呼叫端選擇較精簡的版本。
+fn align_status_line(
+    left: &str,
+    right: &str,
+    width: usize,
+    narrow_emoji: bool,
+) -> Option<String> {
+    let content_width = visible_width_ex(left, narrow_emoji)
+        + visible_width_ex(right, narrow_emoji);
+    if content_width > width {
+        return None;
+    }
+    Some(format!("{left}{}{right}", " ".repeat(width - content_width)))
+}
+
 pub struct Pikmin {
     pub narrow_emoji: bool,
     pub buddy_padding: bool,
@@ -163,46 +178,39 @@ impl Theme for Pikmin {
             pick_small(slot + 1)
         };
 
-        let mut left_plain = "CLAUDE".to_string();
-        if let Some(v) = &input.version {
-            left_plain += &format!(" v{v}");
-        }
-        let left_len = left_plain.len();
-
         let model_str = input.model.display().unwrap_or_default();
         let ctx_size = input.context_window.size().map(fmt_tokens).unwrap_or_default();
-
-        let mut right_plain = String::new();
-        if !model_str.is_empty() {
-            right_plain += &format!("{model_str} ");
-        }
-        if !ctx_size.is_empty() {
-            right_plain += &format!("{ctx_size} ");
-        }
-        right_plain += &format!("Context X{ctx_remain}% left");
-        // emoji(2 in normal, 1+HS in narrow) replacing X(1) → +1
-        let right_len = right_plain.len() + 1;
-
-        let gap = (map_w.saturating_sub(left_len + right_len)).max(2);
-        let gap_pad = " ".repeat(gap);
-
-        let mut left_colored = format!("{ORANGE}CLAUDE{NC}");
+        let left_base = format!("{ORANGE}CLAUDE{NC}");
+        let mut left_full = left_base.clone();
         if let Some(v) = &input.version {
-            left_colored += &format!(" {DIM}v{v}{NC}");
+            left_full += &format!(" {DIM}v{v}{NC}");
         }
 
-        let mut right_colored = String::new();
+        let mut right_full = String::new();
         if !model_str.is_empty() {
-            right_colored += &format!("{DIM}{model_str}{NC} ");
+            right_full += &format!("{DIM}{model_str}{NC} ");
         }
         if !ctx_size.is_empty() {
-            right_colored += &format!("{DIM}{ctx_size}{NC} ");
+            right_full += &format!("{DIM}{ctx_size}{NC} ");
         }
         let ctx_c = colour_remain(ctx_remain);
         let flower_spacer = if ne { HS } else { "" };
-        right_colored += &format!("{DIM}Context{NC} {next_flower}{flower_spacer}{ctx_c} {DIM}left{NC}");
+        let right_context = format!(
+            "{DIM}Context{NC} {next_flower}{flower_spacer}{ctx_c} {DIM}left{NC}"
+        );
+        right_full += &right_context;
+        let right_compact = format!("{DIM}C{NC} {next_flower}{flower_spacer}{ctx_c}");
 
-        let header = format!("{left_colored}{gap_pad}{right_colored}");
+        let header = [
+            (&left_full, &right_full),
+            (&left_base, &right_full),
+            (&left_base, &right_context),
+            (&String::new(), &right_context),
+            (&String::new(), &right_compact),
+        ]
+        .into_iter()
+        .find_map(|(left, right)| align_status_line(left, right, map_w, ne))
+        .unwrap_or_else(|| pad_to_width_ex(&right_compact, map_w, ne));
 
         // ── Sky ─────────────────────────────────────────────────────
         let sky_color = "\x1b[38;5;39m";
@@ -214,65 +222,66 @@ impl Theme for Pikmin {
 
         // ── Footer ──────────────────────────────────────────────────
         let mut footer_left = String::new();
-        let mut footer_left_plain = String::new();
+        let mut footer_left_compact = String::new();
 
         if let Some(w) = week {
             let w_remain = w.remain();
             let w_c = colour_remain(w_remain);
             footer_left += &format!("{DIM}7d{NC} {w_c}");
-            footer_left_plain += &format!("7d {w_remain}%");
+            footer_left_compact += &format!("{DIM}7d{NC} {w_c}");
             if let Some(reset) = w.resets_at {
                 let rs = fmt_reset(reset);
                 let fruit = pick_fruit(week_reset_slot.unwrap_or(0));
                 let fs = if ne { HS } else { "" };
                 footer_left += &format!(" {fruit}{fs}{DIM}{rs}{NC}");
-                footer_left_plain += &format!(" XX{rs}");
             }
         }
 
         if let Some(f) = five {
             if !footer_left.is_empty() {
                 footer_left += "  ";
-                footer_left_plain += "  ";
             }
             let f_remain = f.remain();
             let f_c = colour_remain(f_remain);
             footer_left += &format!("{DIM}5h{NC} {f_c}");
-            footer_left_plain += &format!("5h {f_remain}%");
+            if !footer_left_compact.is_empty() {
+                footer_left_compact += "  ";
+            }
+            footer_left_compact += &format!("{DIM}5h{NC} {f_c}");
             if let Some(reset) = f.resets_at {
                 let rs = fmt_reset(reset);
                 let fruit = pick_fruit(five_reset_slot.unwrap_or(0));
                 let fs = if ne { HS } else { "" };
                 footer_left += &format!(" {fruit}{fs}{DIM}{rs}{NC}");
-                footer_left_plain += &format!(" XX{rs}");
             }
         }
 
-        let (footer_right, footer_right_cols): (String, usize) = if rate_hit {
-            ("Ha! ▶️".to_string(), 7)
+        let (footer_right, footer_right_compact) = if rate_hit {
+            ("Ha! ▶️".to_string(), "Ha! ▶️".to_string())
         } else {
             let effort = read_effort_level().filter(|s| !s.is_empty());
-            match effort {
-                Some(e) if e == "xhigh" || e == "max" => (
-                    format!("{DIM}{e}{NC}⏩ ✨Bloom!⏹️"),
-                    e.chars().count() + 2 + 1 + 10,
-                ),
-                Some(e) => (
-                    format!("{DIM}{e}{NC} ✨Bloom!⏹️"),
-                    e.chars().count() + 1 + 10,
-                ),
-                None => ("✨Bloom!⏹️".to_string(), 10),
-            }
+            let full = match effort {
+                Some(e) if e == "xhigh" || e == "max" => {
+                    format!("{DIM}{e}{NC}⏩ ✨Bloom!⏹️")
+                }
+                Some(e) => format!("{DIM}{e}{NC} ✨Bloom!⏹️"),
+                None => "✨Bloom!⏹️".to_string(),
+            };
+            (full, "✨Bloom!⏹️".to_string())
         };
 
-        let footer_gap = map_w.saturating_sub(footer_left_plain.len() + footer_right_cols).max(2);
-        let footer_pad = " ".repeat(footer_gap);
-        let footer = format!("{footer_left}{footer_pad}{footer_right}");
+        let footer = [
+            (&footer_left, &footer_right),
+            (&footer_left_compact, &footer_right),
+            (&footer_left_compact, &footer_right_compact),
+            (&String::new(), &footer_right_compact),
+        ]
+        .into_iter()
+        .find_map(|(left, right)| align_status_line(left, right, map_w, ne))
+        .unwrap_or_else(|| pad_to_width_ex(&footer_right_compact, map_w, ne));
 
         // ── Combine: pad all lines to uniform visible width ─────────
-        let lines = [&header, &sky, &game, &grass, &footer];
-        let max_vis = lines.iter().map(|l| visible_width_ex(l, ne)).max().unwrap_or(map_w);
-        let target = max_vis.max(map_w);
+        let target = map_w;
         let bp = self.buddy_padding;
         let top_pad = if bp {
             let blank: String = (0..target).map(|_| format!("{DIM}·{NC}")).collect();
@@ -303,6 +312,7 @@ impl Theme for Pikmin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{ContextWindow, ModelField, RateLimit, RateLimits};
 
     #[test]
     fn test_pick_deterministic() {
@@ -408,5 +418,48 @@ mod tests {
         assert!(visible_width(narrow_game) < visible_width(wide_game));
         assert_eq!(visible_width(narrow_game), 30);
         assert_eq!(visible_width(wide_game), 100);
+    }
+
+    #[test]
+    fn test_all_lines_fit_width_with_full_status_content() {
+        let input = Input {
+            model: ModelField::Obj {
+                display_name: Some("Opus".to_string()),
+                id: None,
+            },
+            version: Some("2.1.0".to_string()),
+            context_window: ContextWindow {
+                used_percentage: 50.0,
+                context_window_size: Some(1_000_000),
+                total_tokens: None,
+            },
+            rate_limits: RateLimits {
+                five_hour: Some(RateLimit {
+                    used_percentage: 50.0,
+                    resets_at: Some(u64::MAX),
+                }),
+                seven_day: Some(RateLimit {
+                    used_percentage: 50.0,
+                    resets_at: Some(u64::MAX),
+                }),
+            },
+        };
+        let theme = Pikmin {
+            narrow_emoji: false,
+            buddy_padding: false,
+        };
+
+        let output = theme.render(&input, &RawState::default(), 50);
+
+        assert!(output.contains("50%"));
+        assert!(output.contains("left"));
+        assert!(output.contains("Bloom!"));
+        for line in output.lines() {
+            assert!(
+                visible_width(line) <= 50,
+                "line width {} exceeded 50: {line:?}",
+                visible_width(line),
+            );
+        }
     }
 }
