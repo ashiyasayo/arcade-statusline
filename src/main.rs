@@ -9,6 +9,7 @@ use std::io::Read;
 use themes::Theme;
 
 const DEFAULT_TERMINAL_COLS: usize = 120;
+const CLAUDE_UI_RIGHT_MARGIN: usize = 4;
 
 fn parse_columns(value: &str) -> Option<usize> {
     value.parse::<usize>().ok().filter(|&cols| cols > 0)
@@ -16,6 +17,13 @@ fn parse_columns(value: &str) -> Option<usize> {
 
 fn columns_from_env() -> Option<usize> {
     std::env::var("COLUMNS").ok().and_then(|value| parse_columns(&value))
+}
+
+fn render_width(manual_width: Option<usize>, detected_width: usize) -> usize {
+    manual_width.unwrap_or_else(|| {
+        // Claude Code 會在右側保留內建留白或通知區；填滿 COLUMNS 會讓尾端被省略。
+        detected_width.saturating_sub(CLAUDE_UI_RIGHT_MARGIN).max(1)
+    })
 }
 
 #[cfg(unix)]
@@ -228,8 +236,7 @@ fn main() {
     }
     // Demo mode: read-only, don't modify state
 
-    // Claude Code 會以 COLUMNS 提供 status line 可使用的完整寬度。
-    let max_width = manual_width.unwrap_or_else(terminal_cols);
+    let max_width = render_width(manual_width, terminal_cols());
 
     // Render with selected theme
     let output = match theme_name {
@@ -254,5 +261,15 @@ mod tests {
     #[test]
     fn valid_columns_value_is_accepted() {
         assert_eq!(parse_columns("96"), Some(96));
+    }
+
+    #[test]
+    fn automatic_width_reserves_space_for_claude_ui() {
+        assert_eq!(render_width(None, 50), 50 - CLAUDE_UI_RIGHT_MARGIN);
+    }
+
+    #[test]
+    fn manual_width_is_used_without_a_margin() {
+        assert_eq!(render_width(Some(50), 120), 50);
     }
 }
